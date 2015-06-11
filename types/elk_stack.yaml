@@ -1,0 +1,102 @@
+
+################################################################
+# Blueprint node types.
+#
+# specific new types for the nodecellar app.
+# these types are mapped to scripts that are resposible
+# for the lifecycle operation.
+################################################################
+
+node_types:
+
+  ###########################################################
+  # ElasticSearch Search Engine.
+  #
+  # Used to store and retreive the data.
+  # configurable properties:
+  #   - port
+  #   - cluster name
+  #
+  #
+  ###########################################################
+
+  elk.nodes.elasticsearchServer:
+    derived_from: cloudify.nodes.DBMS
+    properties:
+      port:
+        description: elasticsearch port
+        type: integer
+      clusterName:  
+         description: elasticsearch cluster name
+         type: string
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create: scripts/elasticsearch/install-elasticsearch.sh
+        #start: scripts/elasticsearch/start-elasticsearch.sh
+        #stop: scripts/elasticsearch/stop-elasticsearch.sh
+
+
+  ###########################################################
+  # logstash Server.
+  #
+  # Used to host the logstash server instance.
+  ###########################################################
+
+  elk.nodes.logstashServer:
+    derived_from: cloudify.nodes.ApplicationServer
+    properties:
+      port:
+        description: logstash port
+        type: integer
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create: scripts/logstash/install-logstash.sh
+        #start: scripts/logstash/start-logstash.sh
+        #stop: scripts/logstash/stop-logstash.sh
+
+  elk.nodes.kibanaServer:
+    derived_from: cloudify.nodes.ApplicationServer
+    properties:
+      port:
+        description: kibana port
+        type: integer
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create: scripts/kibana/install-kibana.sh
+        #start: scripts/kibana/start-kibana.sh
+        #stop: scripts/kibana/stop-kibana.sh
+
+
+ 
+
+################################################################
+# Blueprint relationships.
+#
+# specific new relationships for the ELK stack.
+# these relationships are mapped to scripts that are responsible
+# for the relationship operation.
+################################################################
+
+relationships:
+
+  ###########################################################
+  # This relationship will set the elasticsearch
+  # host ip on the source node as a runtime property.
+  #
+  # This will enable the source node to locate the elasticsearch
+  # engine
+  ###########################################################
+
+  logstash_node_connected_to_elasticsearch:
+    derived_from: cloudify.relationships.connected_to
+    source_interfaces:
+      cloudify.interfaces.relationship_lifecycle:
+        postconfigure: scripts/logstash/set-elasticsearch-url.sh
+        
+  kibana_node_connected_to_elasticsearch:
+    derived_from: cloudify.relationships.connected_to
+    source_interfaces:
+      cloudify.interfaces.relationship_lifecycle:
+        postconfigure: scripts/kibana/set-elasticsearch-url.sh
+
+

@@ -1,0 +1,4 @@
+cluster_name: cfy_elk_cluster
+image: 'c6d36e11-f4d5-4221-b6e8-4e97914c67e9'
+flavor: '8b5be402-98e6-461c-8425-56f708187c13'
+agent_user: 'ubuntu'

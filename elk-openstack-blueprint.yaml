@@ -1,0 +1,332 @@
+###########################################################
+# This Blueprint installs the ELK Stack
+# on an openstack cloud environment.
+###########################################################
+
+tosca_definitions_version: cloudify_dsl_1_0
+
+imports:
+  - http://www.getcloudify.org/spec/cloudify/3.2m8/types.yaml
+  - http://www.getcloudify.org/spec/openstack-plugin/1.2m8/plugin.yaml
+  - http://www.getcloudify.org/spec/diamond-plugin/1.2m8/plugin.yaml
+  - types/elk_stack.yaml
+
+
+#####################################################################################
+# inputs section allows the user to use same
+# blueprint for creating different deployments, each one
+# with its own parameters.
+# to specify deployment inputs run:
+#   - cfy deployments create -b <blueprint_id> -d <deployment_id> -i inputs.json
+#####################################################################################
+
+inputs:
+
+  image:
+    description: >
+      Image to be used when launching agent VM's
+
+  flavor:
+    description: >
+      Flavor of the agent VM's
+
+  agent_user:
+    description: >
+      User for connecting to agent VM's
+
+  cluster_name:
+    description: >
+      the elasticsearch cluster name the groups all ES instances in one cluster    
+
+node_types:
+
+  ###########################################################
+  # We define a type that inherits openstack's default
+  # server, and adds monitoring capabillities on top of it.
+  ###########################################################
+
+  elk.nodes.MonitoredServer:
+    derived_from: cloudify.openstack.nodes.Server
+    properties:
+      cloudify_agent:
+        default:
+          user: { get_input: agent_user }
+      server:
+        default:
+          image: { get_input: image }
+          flavor: { get_input: flavor }
+    interfaces:
+
+      ###########################################################
+      # We are in fact telling cloudify to install a diamond
+      # monitoring agent on the server.
+      #
+      # (see https://github.com/BrightcoveOS/Diamond)
+      ###########################################################
+
+      cloudify.interfaces.monitoring_agent:
+          install:
+            implementation: diamond.diamond_agent.tasks.install
+            inputs:
+              diamond_config:
+                default:
+                  interval: 1
+          start: diamond.diamond_agent.tasks.start
+          stop: diamond.diamond_agent.tasks.stop
+          uninstall: diamond.diamond_agent.tasks.uninstall
+
+      ###########################################################
+      # Adding some collectors. These collectors are necessary
+      # for the Cloudify UI to display the deafult metrics.
+      ###########################################################
+
+      cloudify.interfaces.monitoring:
+          start:
+            implementation: diamond.diamond_agent.tasks.add_collectors
+            inputs:
+              collectors_config:
+                default:
+                  CPUCollector: {}
+                  MemoryCollector: {}
+                  LoadAverageCollector: {}
+                  DiskUsageCollector:
+                    config:
+                      devices: x?vd[a-z]+[0-9]*$
+                  NetworkCollector: {}
+
+node_templates:
+
+  
+ ########## Hosts ###################
+ 
+  elasticsearch_host:
+    type: elk.nodes.MonitoredServer
+    instances:
+        deploy: 2
+
+    relationships:
+      ###########################################################
+      # Attaching a floating ip to each elasticsearch host
+      ###########################################################
+
+      - target: elasticsearch_floatingip
+        type: cloudify.openstack.server_connected_to_floating_ip
+ 
+      ###########################################################
+      # Attaching the elasticsearch security group to the elasticsearch host
+      ###########################################################
+
+      - target: elasticsearch_security_group
+        type: cloudify.openstack.server_connected_to_security_group
+
+  logstash_host:
+    type: elk.nodes.MonitoredServer
+    relationships:
+
+      ###########################################################
+      # Attaching a floating ip to the logstash host
+      ###########################################################
+
+      - target: logstash_floatingip
+        type: cloudify.openstack.server_connected_to_floating_ip
+
+      ###########################################################
+      # Attaching the logstash security group to
+      # the logstash host
+      ###########################################################
+
+      - target: logstash_security_group
+        type: cloudify.openstack.server_connected_to_security_group
+
+  kibana_host:
+    type: elk.nodes.MonitoredServer
+    relationships:
+
+      ###########################################################
+      # Attaching a floating ip to the kibana host
+      ###########################################################
+
+      - target: kibana_floatingip
+        type: cloudify.openstack.server_connected_to_floating_ip
+
+      ###########################################################
+      # Attaching the kibana security group to
+      # the kibana host
+      ###########################################################
+
+      - target: kibana_security_group
+        type: cloudify.openstack.server_connected_to_security_group
+      
+
+#############################################################
+
+  elasticsearch:
+    type: elk.nodes.elasticsearchServer
+    properties:
+       port: 9300
+       clusterName: { get_input: cluster_name }
+    
+    interfaces:
+      
+      cloudify.interfaces.monitoring:
+          start:
+            implementation: diamond.diamond_agent.tasks.add_collectors
+            inputs:
+              collectors_config:
+                ElasticsearchCollector:
+                  config:
+                    hosts: "localhost:9300"
+    relationships:
+      - type: cloudify.relationships.contained_in
+        target: elasticsearch_host
+
+  logstash:
+    type: elk.nodes.logstashServer
+    properties:
+       port: 5000
+    relationships:
+     
+      ################################
+      # Setting the elasticsearch connection
+      ################################
+
+      - type: logstash_node_connected_to_elasticsearch
+        target: elasticsearch
+        properties:
+          connection_type: all_to_one
+
+
+      - type: cloudify.relationships.contained_in
+        target: logstash_host
+
+  kibana:
+    type: elk.nodes.kibanaServer
+    properties:
+       port: 5601
+    relationships:
+     
+      ################################
+      # Setting the elasticsearch connection
+      ################################
+
+      - type: kibana_node_connected_to_elasticsearch
+        target: elasticsearch
+        properties:
+          connection_type: all_to_one
+
+
+      - type: cloudify.relationships.contained_in
+        target: kibana_host
+
+  
+  ###########################################################
+  # A security group to enable access to the elasticsearch host
+  # using the ports of the elsticsearch node.
+  # default ports are on the range of 9200-9300 TCP
+  # Both logstash and kibana need it to communicate 
+  # with elasticsearch, since they run on
+  # different hosts.
+  ###########################################################
+
+  elasticsearch_security_group:
+    type: cloudify.openstack.nodes.SecurityGroup
+    properties:
+      security_group:
+        name: elasticsearch_security_group
+      rules:
+        - remote_ip_prefix: 0.0.0.0/0
+          port: { get_property: [ elasticsearch, port ] }
+        - remote_ip_prefix: 0.0.0.0/0
+          port: 9200
+        - remote_ip_prefix: 0.0.0.0/0
+          port: 54328
+          protocol: udp
+
+  ###########################################################
+  # A security group to enable access to the logstash host.
+  # Should open port 5000 TCP or UDP or other configured port
+  #  for Logstash to listen on.
+  # This security group will be attached to the logstash_host
+  ###########################################################
+
+  logstash_security_group:
+    type: cloudify.openstack.nodes.SecurityGroup
+    properties:
+      security_group:
+        name: logstash_security_group
+      rules:
+        - remote_ip_prefix: 0.0.0.0/0
+          port: { get_property: [ logstash, port ] }
+
+  ###########################################################
+  # A security group to enable web access to the kibana host.
+  # by default kibana listens on port 5601 TCP
+  # This security group will be attached to the kibana_host
+  ###########################################################
+
+  kibana_security_group:
+    type: cloudify.openstack.nodes.SecurityGroup
+    properties:
+      security_group:
+        name: kibana_security_group
+      rules:
+        - remote_ip_prefix: 0.0.0.0/0
+          port: { get_property: [ kibana, port ] }
+
+
+ ###########################################################
+ # A floating ip to be attached to the elasticsearch host, 
+ # as we should be able to access it
+ # from any machine.
+ ###########################################################
+ 
+  elasticsearch_floatingip:
+     type: cloudify.openstack.nodes.FloatingIP
+
+###########################################################
+# A floating ip to be attached to the logstash host, 
+# as we should be able to access it
+# from any machine, on any network.
+###########################################################
+
+  logstash_floatingip:
+    type: cloudify.openstack.nodes.FloatingIP
+
+
+###########################################################
+# A floating ip to be attached to the logstash host, 
+# as we should be able to access it
+# from any machine, on any network.
+###########################################################
+
+  kibana_floatingip:
+     type: cloudify.openstack.nodes.FloatingIP
+
+
+
+###########################################################
+# This outputs section exposes the application endpoint.
+# You can access it by running:
+#   - cfy deployments -d <deployment_id> outputs
+###########################################################
+
+outputs:
+  elasticsearch_endpoint:
+    description: Elasticsearch endpoint
+    value:
+      ip_address: { get_attribute: [ elasticsearch_floatingip, floating_ip_address ] }
+      port: { get_property: [ elasticsearch, port ] }
+
+  logstash_endpoint:
+    description: Logstash endpoint
+    value:    
+      
+      ip_address: { get_attribute: [ logstash_floatingip, floating_ip_address ] }
+      port: { get_property: [ logstash, port ] }
+
+  kibana_endpoint:
+    description: Kibana endpoint
+    value:    
+      
+      ip_address: { get_attribute: [ kibana_floatingip, floating_ip_address ] }
+      port: { get_property: [ kibana, port ] }
