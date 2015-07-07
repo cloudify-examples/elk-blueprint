@@ -2,7 +2,7 @@
 ################################################################
 # Blueprint node types.
 #
-# specific new types for the nodecellar app.
+# specific new types for the elk_stack app.
 # these types are mapped to scripts that are resposible
 # for the lifecycle operation.
 ################################################################
@@ -66,6 +66,33 @@ node_types:
         #start: scripts/kibana/start-kibana.sh
         #stop: scripts/kibana/stop-kibana.sh
 
+  elk.nodes.rabbitmqServerMaster:
+    derived_from: cloudify.nodes.MessageBusServer
+    properties:
+      port:
+        description: rabbitmq port
+        type: integer
+      clusterName:  
+         description: rabbitmq cluster name
+         type: string
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create: scripts/rabbit/install_Rabbitmq-master.sh        
+
+  elk.nodes.rabbitmqServer:
+    derived_from: cloudify.nodes.MessageBusServer
+    properties:
+      port:
+        description: rabbitmq port
+        type: integer
+      clusterName:  
+         description: rabbitmq cluster name
+         type: string
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create: scripts/rabbit/install_Rabbitmq.sh        
+
+      
 
  
 
@@ -92,11 +119,30 @@ relationships:
     source_interfaces:
       cloudify.interfaces.relationship_lifecycle:
         postconfigure: scripts/logstash/set-elasticsearch-url.sh
+
+  logstash_node_connected_to_rabbitmqmaster:
+    derived_from: cloudify.relationships.connected_to
+    source_interfaces:
+      cloudify.interfaces.relationship_lifecycle:
+        postconfigure: scripts/logstash/set-rabbitmq-url.sh      
         
   kibana_node_connected_to_elasticsearch:
     derived_from: cloudify.relationships.connected_to
     source_interfaces:
       cloudify.interfaces.relationship_lifecycle:
         postconfigure: scripts/kibana/set-elasticsearch-url.sh
+ ###########################################################
+  # This relationship will set the master host ip and on the source node as a runtime property.
+  #
+  # This will enable the source node to locate the elasticsearch
+  # engine
+  ###########################################################
+
+  rabbitmq_node_connected_to_rabbitmqmaster:
+    derived_from: cloudify.relationships.connected_to
+    source_interfaces:
+      cloudify.interfaces.relationship_lifecycle:
+         postconfigure: scripts/rabbit/join-cluster.sh
+
 
 

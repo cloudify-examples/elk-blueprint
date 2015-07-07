@@ -2,8 +2,6 @@
 
 #!/bin/bash
 
-set -e
-
 #ctx source instance runtime_properties elasticsearch_ip_address $(ctx target instance host_ip)
 ELASTIC_IP=$(ctx target instance runtime_properties elasticsearch_ip_address)
 ctx logger info "ElasticSearch IP is ${ELASTIC_IP}"    
@@ -18,6 +16,6 @@ fi
 ctx logger info  "Change Elastic IP"
 sudo sed -i -e "s#elasticIP#${ELASTIC_IP}#g"   /opt/logstash/conf/logstash.conf
 ctx logger info  "Starting Logstash with conf file"
-#sudo stop logstash
-sudo start logstash &&
-ctx logger info  "Logstash Service running"  
+sudo stop logstash
+sudo start logstash
+ctx logger info  "Logstash Service running after setting Elastic URL"  

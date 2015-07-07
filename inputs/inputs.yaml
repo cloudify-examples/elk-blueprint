@@ -1,4 +1,7 @@
 cluster_name: cfy_elk_cluster
-image: 'c6d36e11-f4d5-4221-b6e8-4e97914c67e9'
-flavor: '8b5be402-98e6-461c-8425-56f708187c13'
+#image: 'c6d36e11-f4d5-4221-b6e8-4e97914c67e9'
+image: '17d3f9b1-cbc4-4ec1-92a6-743ddb88beb9' # mirantis
+#image: 'c5e4af44-f35d-4142-8db8-3145ac58eff5'
+#flavor: '8b5be402-98e6-461c-8425-56f708187c13'
+flavor: '3' #mirantis
 agent_user: 'ubuntu'

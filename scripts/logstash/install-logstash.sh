@@ -15,8 +15,8 @@ function install_logstash()
     sudo tar -xzvf /opt/logstash.tar.gz -C /opt/logstash --strip 1
     sudo rm /opt/logstash.tar.gz
     
-    #ctx logger info  "installing logstash contrib plugins"
-    #sudo /opt/logstash/bin/plugin install contrib
+    ctx logger info  "installing logstash contrib plugins"
+    sudo /opt/logstash/bin/plugin install contrib
     mkdir -p logstash/conf &&
     
 
