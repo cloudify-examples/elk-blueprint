@@ -90,10 +90,7 @@ node_types:
          type: string
     interfaces:
       cloudify.interfaces.lifecycle:
-        create: scripts/rabbit/install_Rabbitmq.sh        
-
-      
-
+        create: scripts/rabbit/install_Rabbitmq.sh
  
 
 ################################################################
@@ -124,8 +121,8 @@ relationships:
     derived_from: cloudify.relationships.connected_to
     source_interfaces:
       cloudify.interfaces.relationship_lifecycle:
-        postconfigure: scripts/logstash/set-rabbitmq-url.sh      
-        
+        postconfigure: scripts/logstash/set-rabbitmq-url.sh
+
   kibana_node_connected_to_elasticsearch:
     derived_from: cloudify.relationships.connected_to
     source_interfaces:
@@ -142,7 +139,4 @@ relationships:
     derived_from: cloudify.relationships.connected_to
     source_interfaces:
       cloudify.interfaces.relationship_lifecycle:
-         postconfigure: scripts/rabbit/join-cluster.sh
-
-
-
+        postconfigure: scripts/rabbit/join-cluster.sh
