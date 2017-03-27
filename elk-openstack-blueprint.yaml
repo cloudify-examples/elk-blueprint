@@ -3,12 +3,12 @@
 # on an openstack cloud environment.
 ###########################################################
 
-tosca_definitions_version: cloudify_dsl_1_0
+tosca_definitions_version: cloudify_dsl_1_3
 
 imports:
-  - http://www.getcloudify.org/spec/cloudify/3.2m8/types.yaml
-  - http://www.getcloudify.org/spec/openstack-plugin/1.2m8/plugin.yaml
-  - http://www.getcloudify.org/spec/diamond-plugin/1.2m8/plugin.yaml
+  - http://www.getcloudify.org/spec/cloudify/3.4/types.yaml
+  - http://www.getcloudify.org/spec/openstack-plugin/2.0/plugin.yaml
+  - http://www.getcloudify.org/spec/diamond-plugin/1.3.5/plugin.yaml
   - types/elk_stack.yaml
 
 
@@ -36,7 +36,46 @@ inputs:
 
   cluster_name:
     description: >
-      the elasticsearch cluster name the groups all ES instances in one cluster    
+      the elasticsearch cluster name the groups all ES instances in one cluster
+
+  management_network_name:
+    description: >
+      management_network_name
+
+  agent_key_name:
+    description: >
+      the agent public key name (created during manager bootstrap)
+    type: string
+
+  agent_keypair_file:
+    type: string
+    default: ''
+
+  keystone_username:
+    description: YOUR KEYSTONE USERNAME
+
+  keystone_password:
+    description: YOUR KEYSTONE PASSWORD
+
+  keystone_tenant_name:
+    description: ''
+
+  keystone_url:
+    description: ''
+
+  region:
+    default: ''
+
+  external_network_name:
+    type: string
+
+  openstack_configuration:
+    default:
+      username: { get_input: keystone_username }
+      password: { get_input: keystone_password }
+      tenant_name: { get_input: keystone_tenant_name }
+      auth_url: { get_input: keystone_url }
+      region: { get_input: region }
 
 node_types:
 
@@ -48,13 +87,22 @@ node_types:
   elk.nodes.MonitoredServer:
     derived_from: cloudify.openstack.nodes.Server
     properties:
-      cloudify_agent:
+      openstack_config:
+        default:
+          { get_input: openstack_configuration }
+      agent_config:
         default:
           user: { get_input: agent_user }
+          key: { get_input: agent_keypair_file }
+          install_method: remote
       server:
         default:
+          key_name: { get_input: agent_key_name }
           image: { get_input: image }
           flavor: { get_input: flavor }
+      management_network_name:
+        default:
+          { get_input: management_network_name }
     interfaces:
 
       ###########################################################
@@ -96,14 +144,14 @@ node_types:
 
 node_templates:
 
-  
  ########## Hosts ###################
- 
+
   elasticsearch_host:
     type: elk.nodes.MonitoredServer
-    instances:
-        deploy: 3
-
+    capabilities:
+      scalable:
+        properties:
+          default_instances: 3
     relationships:
       ###########################################################
       # Attaching a floating ip to each elasticsearch host
@@ -111,7 +159,7 @@ node_templates:
       #$$ Remove before commit
       - target: elasticsearch_floatingip
         type: cloudify.openstack.server_connected_to_floating_ip
- 
+
       ###########################################################
       # Attaching the elasticsearch security group to the elasticsearch host
       ###########################################################
@@ -156,11 +204,9 @@ node_templates:
 
       - target: kibana_security_group
         type: cloudify.openstack.server_connected_to_security_group
-      
 
   rabbitmq_master_host:
     type: elk.nodes.MonitoredServer
-    
     relationships:
       ###########################################################
       # Attaching a floating ip to each rabbitmq_ host
@@ -168,7 +214,7 @@ node_templates:
 
       - target: rabbitmq_master_floatingip
         type: cloudify.openstack.server_connected_to_floating_ip
- 
+
       ###########################################################
       # Attaching the rabbitmq_ security group to the rabbitmq_ host
       ###########################################################
@@ -178,9 +224,10 @@ node_templates:
 
   rabbitmq_host:
     type: elk.nodes.MonitoredServer
-    instances:
-        deploy: 2
-
+    capabilities:
+      scalable:
+        properties:
+          default_instances: 2
     relationships:
       ###########################################################
       # Attaching a floating ip to each rabbitmq_ host
@@ -188,14 +235,13 @@ node_templates:
 
       - target: rabbitmq_floatingip
         type: cloudify.openstack.server_connected_to_floating_ip
- 
+
       ###########################################################
       # Attaching the rabbitmq_ security group to the rabbitmq_ host
       ###########################################################
 
       - target: rabbitmq_security_group
         type: cloudify.openstack.server_connected_to_security_group
-
 
 #############################################################
 
@@ -204,9 +250,9 @@ node_templates:
     properties:
        port: 9300
        clusterName: { get_input: cluster_name }
-    
+
     interfaces:
-      
+
       cloudify.interfaces.monitoring:
           start:
             implementation: diamond.diamond_agent.tasks.add_collectors
@@ -298,7 +344,7 @@ node_templates:
       - type: rabbitmq_node_connected_to_rabbitmqmaster
         target: rabbitmq_master
       - type: cloudify.relationships.contained_in
-        target: rabbitmq_host 
+        target: rabbitmq_host
 
   ###########################################################
   # A security group to enable access to the elasticsearch host
@@ -312,6 +358,7 @@ node_templates:
   elasticsearch_security_group:
     type: cloudify.openstack.nodes.SecurityGroup
     properties:
+      openstack_config: { get_input: openstack_configuration }
       security_group:
         name: elasticsearch_security_group
       rules:
@@ -333,6 +380,7 @@ node_templates:
   logstash_security_group:
     type: cloudify.openstack.nodes.SecurityGroup
     properties:
+      openstack_config: { get_input: openstack_configuration }
       security_group:
         name: logstash_security_group
       rules:
@@ -348,6 +396,7 @@ node_templates:
   kibana_security_group:
     type: cloudify.openstack.nodes.SecurityGroup
     properties:
+      openstack_config: { get_input: openstack_configuration }
       security_group:
         name: kibana_security_group
       rules:
@@ -358,6 +407,7 @@ node_templates:
   rabbitmq_security_group:
     type: cloudify.openstack.nodes.SecurityGroup
     properties:
+      openstack_config: { get_input: openstack_configuration }
       security_group:
         name: rabbitmq_security_group
       rules:
@@ -380,10 +430,18 @@ node_templates:
  ###########################################################
  
   rabbitmq_floatingip:
-     type: cloudify.openstack.nodes.FloatingIP
+    type: cloudify.openstack.nodes.FloatingIP
+    properties:
+      openstack_config: { get_input: openstack_configuration }
+      floatingip:
+        floating_network_name: { get_input: external_network_name }
 
   rabbitmq_master_floatingip:
-        type: cloudify.openstack.nodes.FloatingIP
+    type: cloudify.openstack.nodes.FloatingIP
+    properties:
+      openstack_config: { get_input: openstack_configuration }
+      floatingip:
+        floating_network_name: { get_input: external_network_name }
  ###########################################################
  # A floating ip to be attached to the elasticsearch host, 
  # as we should be able to access it
@@ -391,8 +449,11 @@ node_templates:
  ###########################################################
  #$$ Remove before commit
   elasticsearch_floatingip:
-     type: cloudify.openstack.nodes.FloatingIP
-
+    type: cloudify.openstack.nodes.FloatingIP
+    properties:
+      openstack_config: { get_input: openstack_configuration }
+      floatingip:
+        floating_network_name: { get_input: external_network_name }
 ###########################################################
 # A floating ip to be attached to the logstash host, 
 # as we should be able to access it
@@ -401,7 +462,10 @@ node_templates:
 #$$ Remove before commit
   logstash_floatingip:
     type: cloudify.openstack.nodes.FloatingIP
-
+    properties:
+      openstack_config: { get_input: openstack_configuration }
+      floatingip:
+        floating_network_name: { get_input: external_network_name }
 
 ###########################################################
 # A floating ip to be attached to the logstash host, 
@@ -410,9 +474,11 @@ node_templates:
 ###########################################################
 
   kibana_floatingip:
-     type: cloudify.openstack.nodes.FloatingIP
-
-
+    type: cloudify.openstack.nodes.FloatingIP
+    properties:
+      openstack_config: { get_input: openstack_configuration }
+      floatingip:
+        floating_network_name: { get_input: external_network_name }
 
 ###########################################################
 # This outputs section exposes the application endpoint.
@@ -450,4 +516,4 @@ outputs:
     description: RabbitMQ_Master endpoint
     value:    
       ip_address: { get_attribute: [ rabbitmq_master_floatingip, floating_ip_address ] }
-      port: { get_property: [ rabbitmq_master, port ] } 
+      port: { get_property: [ rabbitmq_master, port ] }
