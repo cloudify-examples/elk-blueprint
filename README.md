@@ -2,3 +2,5 @@
 
 # cloudify-elk-blueprint
 A RabbitMQ Elasticsearch Logstash and Kibana Blueprint
+
+Run `cfy install [path-to-blueprint-file] -i [path-to-inputs-file]`

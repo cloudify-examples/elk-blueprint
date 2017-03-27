@@ -1,0 +1,385 @@
+tosca_definitions_version: cloudify_dsl_1_3
+
+imports:
+  - http://www.getcloudify.org/spec/cloudify/4.0/types.yaml
+  - http://getcloudify.org.s3.amazonaws.com/spec/aws-plugin/1.4.4/plugin.yaml
+  - http://www.getcloudify.org/spec/diamond-plugin/1.3.5/plugin.yaml
+  - types/elk_stack.yaml
+  - imports/elk-blueprint.yaml
+
+inputs:
+
+  key_name:
+    default: elk-blueprint-key
+
+  private_key_path:
+    default: ~/.ssh/elk-blueprint-key.pem
+
+  vpc_id:
+    type: string
+
+  vpc_cidr_block:
+    type: string
+
+  subnet_id:
+    type: string
+
+  subnet_cidr:
+    type: string
+
+  ec2_region_name:
+    default: us-east-1
+
+  ec2_region_endpoint:
+    default: ec2.us-east-1.amazonaws.com
+
+  availability_zone:
+    default: us-east-1e
+
+  ami:
+    description: >
+      Amazon Ubuntu 14.04 AMI
+
+  instance_type:
+    description: >
+      Agent VM Instance Type
+
+  agent_user:
+    default: ubuntu
+
+dsl_definitions:
+
+    aws_config: &aws_config
+      aws_access_key_id: { get_secret: aws_access_key_id }
+      aws_secret_access_key: { get_secret: aws_secret_access_key }
+      ec2_region_name: { get_input: ec2_region_name }
+      ec2_region_endpoint: { get_input: ec2_region_endpoint }
+
+node_types:
+
+  elk.nodes.MonitoredServer:
+    derived_from: cloudify.aws.nodes.Instance
+    properties:
+      agent_config:
+        default:
+          install_method: remote
+          port: 22
+          user: { get_input: agent_user }
+          key: { get_property: [ key, private_key_path ] }
+      aws_config:
+        default: *aws_config
+      image_id:
+        default: { get_input: ami }
+      instance_type:
+        default: { get_input: instance_type }
+      parameters:
+        default:
+          placement: { get_property: [ subnet, availability_zone ] }
+    interfaces:
+
+      ###########################################################
+      # We are in fact telling cloudify to install a diamond
+      # monitoring agent on the server.
+      #
+      # (see https://github.com/BrightcoveOS/Diamond)
+      ###########################################################
+
+      cloudify.interfaces.monitoring_agent:
+          install:
+            implementation: diamond.diamond_agent.tasks.install
+            inputs:
+              diamond_config:
+                default:
+                  interval: 1
+          start: diamond.diamond_agent.tasks.start
+          stop: diamond.diamond_agent.tasks.stop
+          uninstall: diamond.diamond_agent.tasks.uninstall
+
+      ###########################################################
+      # Adding some collectors. These collectors are necessary
+      # for the Cloudify UI to display the deafult metrics.
+      ###########################################################
+
+      cloudify.interfaces.monitoring:
+          start:
+            implementation: diamond.diamond_agent.tasks.add_collectors
+            inputs:
+              collectors_config:
+                default:
+                  CPUCollector: {}
+                  MemoryCollector: {}
+                  LoadAverageCollector: {}
+                  DiskUsageCollector:
+                    config:
+                      devices: x?vd[a-z]+[0-9]*$
+                  NetworkCollector: {}
+
+
+node_templates:
+
+  # Application Nodes are imported from imports/elk-blueprint.yaml. See #imports
+
+  elasticsearch_host:
+    type: elk.nodes.MonitoredServer
+    capabilities:
+      scalable:
+        properties:
+          default_instances: 1
+    relationships:
+      - type: cloudify.aws.relationships.instance_connected_to_keypair
+        target: key
+      - type: cloudify.aws.relationships.instance_connected_to_subnet
+        target: subnet
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: ssh_group
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: elasticsearch_security_group
+      - type: cloudify.aws.relationships.instance_connected_to_elastic_ip
+        target: elasticsearch_floatingip
+
+  logstash_host:
+    type: elk.nodes.MonitoredServer
+    relationships:
+      - type: cloudify.aws.relationships.instance_connected_to_keypair
+        target: key
+      - type: cloudify.aws.relationships.instance_connected_to_subnet
+        target: subnet
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: ssh_group
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: logstash_security_group
+      - type: cloudify.aws.relationships.instance_connected_to_elastic_ip
+        target: logstash_floatingip
+
+  kibana_host:
+    type: elk.nodes.MonitoredServer
+    relationships:
+      - type: cloudify.aws.relationships.instance_connected_to_keypair
+        target: key
+      - type: cloudify.aws.relationships.instance_connected_to_subnet
+        target: subnet
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: ssh_group
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: kibana_security_group
+      - type: cloudify.aws.relationships.instance_connected_to_elastic_ip
+        target: kibana_floatingip
+
+  rabbitmq_master_host:
+    type: elk.nodes.MonitoredServer
+    relationships:
+      - type: cloudify.aws.relationships.instance_connected_to_keypair
+        target: key
+      - type: cloudify.aws.relationships.instance_connected_to_subnet
+        target: subnet
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: ssh_group
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: rabbitmq_security_group
+      - type: cloudify.aws.relationships.instance_connected_to_elastic_ip
+        target: rabbitmq_master_floatingip
+
+  rabbitmq_host:
+    type: elk.nodes.MonitoredServer
+    capabilities:
+      scalable:
+        properties:
+          default_instances: 1
+    relationships:
+      - type: cloudify.aws.relationships.instance_connected_to_keypair
+        target: key
+      - type: cloudify.aws.relationships.instance_connected_to_subnet
+        target: subnet
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: ssh_group
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: rabbitmq_security_group
+      - type: cloudify.aws.relationships.instance_connected_to_elastic_ip
+        target: rabbitmq_floatingip
+
+  subnet:
+    type: cloudify.aws.nodes.Subnet
+    properties:
+      aws_config: *aws_config
+      use_external_resource: true
+      resource_id: { get_input: subnet_id }
+      cidr_block: { get_input: subnet_cidr }
+      availability_zone: { get_input: availability_zone }
+    relationships:
+      - type: cloudify.aws.relationships.subnet_contained_in_vpc
+        target: vpc
+
+  vpc:
+    type: cloudify.aws.nodes.VPC
+    properties:
+      aws_config: *aws_config
+      use_external_resource: true
+      resource_id: { get_input: vpc_id }
+      cidr_block: { get_input: vpc_cidr_block }
+
+  key:
+    type: cloudify.aws.nodes.KeyPair
+    properties:
+      aws_config: *aws_config
+      resource_id: { get_input: key_name }
+      private_key_path: { get_input: private_key_path }
+
+  # Security Groups
+
+  ssh_group:
+    type: cloudify.aws.nodes.SecurityGroup
+    properties:
+      aws_config: *aws_config
+      description: Puppet Group
+      rules:
+        - ip_protocol: tcp
+          from_port: 22
+          to_port: 22
+          cidr_ip: { get_input: vpc_cidr_block }
+    relationships:
+      - type: cloudify.aws.relationships.security_group_contained_in_vpc
+        target: vpc
+
+  elasticsearch_security_group:
+    type: cloudify.aws.nodes.SecurityGroup
+    properties:
+      aws_config: *aws_config
+      description: Elasticsearch Group
+      rules:
+        - ip_protocol: udp
+          from_port: 54328
+          to_port: 54328
+          cidr_ip: 0.0.0.0/0
+        - ip_protocol: tcp
+          from_port: 9200
+          to_port: 9200
+          cidr_ip: 0.0.0.0/0
+        - ip_protocol: tcp
+          from_port: { get_property: [ elasticsearch, port ] }
+          to_port: { get_property: [ elasticsearch, port ] }
+          cidr_ip: { get_input: vpc_cidr_block }
+    relationships:
+      - type: cloudify.aws.relationships.security_group_contained_in_vpc
+        target: vpc
+
+  logstash_security_group:
+    type: cloudify.aws.nodes.SecurityGroup
+    properties:
+      aws_config: *aws_config
+      description: Logstash Group
+      rules:
+        - ip_protocol: tcp
+          from_port: { get_property: [ logstash, port ] }
+          to_port: { get_property: [ logstash, port ] }
+          cidr_ip: { get_input: vpc_cidr_block }
+    relationships:
+      - type: cloudify.aws.relationships.security_group_contained_in_vpc
+        target: vpc
+
+  kibana_security_group:
+    type: cloudify.aws.nodes.SecurityGroup
+    properties:
+      aws_config: *aws_config
+      description: Kibana Group
+      rules:
+        - ip_protocol: tcp
+          from_port: { get_property: [ kibana, port ] }
+          to_port: { get_property: [ kibana, port ] }
+          cidr_ip: { get_input: vpc_cidr_block }
+    relationships:
+      - type: cloudify.aws.relationships.security_group_contained_in_vpc
+        target: vpc
+
+  rabbitmq_security_group:
+    type: cloudify.aws.nodes.SecurityGroup
+    properties:
+      aws_config: *aws_config
+      description: RabbitMQ Group
+      rules:
+        - ip_protocol: tcp
+          from_port: 5672
+          to_port: 5672
+          cidr_ip: 0.0.0.0/0
+        - ip_protocol: tcp
+          from_port: 15672
+          to_port: 15672
+          cidr_ip: 0.0.0.0/0
+        - ip_protocol: tcp
+          from_port: 25672
+          to_port: 25672
+          cidr_ip: 0.0.0.0/0
+        - ip_protocol: tcp
+          from_port: 54328
+          to_port: 54328
+          cidr_ip: 0.0.0.0/0
+        - ip_protocol: tcp
+          from_port: { get_property: [ rabbitmq, port ] }
+          to_port: { get_property: [ rabbitmq, port ] }
+          cidr_ip: { get_input: vpc_cidr_block }
+    relationships:
+      - type: cloudify.aws.relationships.security_group_contained_in_vpc
+        target: vpc
+
+  # Floating IPs
+
+  rabbitmq_floatingip:
+    type: cloudify.aws.nodes.ElasticIP
+    properties:
+      aws_config: *aws_config
+      domain: vpc
+
+  rabbitmq_master_floatingip:
+    type: cloudify.aws.nodes.ElasticIP
+    properties:
+      aws_config: *aws_config
+      domain: vpc
+
+  elasticsearch_floatingip:
+    type: cloudify.aws.nodes.ElasticIP
+    properties:
+      aws_config: *aws_config
+      domain: vpc
+
+  logstash_floatingip:
+    type: cloudify.aws.nodes.ElasticIP
+    properties:
+      aws_config: *aws_config
+      domain: vpc
+
+  kibana_floatingip:
+    type: cloudify.aws.nodes.ElasticIP
+    properties:
+      aws_config: *aws_config
+      domain: vpc
+
+outputs:
+
+  elasticsearch_endpoint:
+    description: Elasticsearch endpoint
+    value:
+      ip_address: { get_attribute: [ elasticsearch_floatingip, aws_resource_id ] }
+      port: { get_property: [ elasticsearch, port ] }
+
+  logstash_endpoint:
+    description: Logstash endpoint
+    value:
+      ip_address: { get_attribute: [ logstash_floatingip, aws_resource_id ] }
+      port: { get_property: [ logstash, port ] }
+
+  kibana_endpoint:
+    description: Kibana endpoint
+    value:
+      ip_address: { get_attribute: [ kibana_floatingip, aws_resource_id ] }
+      port: { get_property: [ kibana, port ] }
+
+  rabbitmq_endpoint:
+    description: RabbitMQ endpoint
+    value:
+      ip_address: { get_attribute: [ rabbitmq_floatingip, aws_resource_id ] }
+      port: { get_property: [ rabbitmq, port ] }
+
+  rabbitmq_master_endpoint:
+    description: RabbitMQ_Master endpoint
+    value:
+      ip_address: { get_attribute: [ rabbitmq_master_floatingip, aws_resource_id ] }
+      port: { get_property: [ rabbitmq_master, port ] }

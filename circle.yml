@@ -23,6 +23,7 @@ test:
   override:
     - cfy init
     - cfy blueprints validate elk-openstack-blueprint.yaml
+    - cfy blueprints validate aws-blueprint.yaml
 
 deployment:
   release:
