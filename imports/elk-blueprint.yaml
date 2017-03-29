@@ -1,0 +1,111 @@
+tosca_definitions_version: cloudify_dsl_1_3
+
+inputs:
+
+  cluster_name:
+    description: >
+      the elasticsearch cluster name the groups all ES instances in one cluster
+    default: cfy_elk_cluster
+
+node_templates:
+
+  elasticsearch:
+    type: elk.nodes.elasticsearchServer
+    properties:
+       port: 9300
+       clusterName: { get_input: cluster_name }
+
+    interfaces:
+
+      cloudify.interfaces.monitoring:
+          start:
+            implementation: diamond.diamond_agent.tasks.add_collectors
+            inputs:
+              collectors_config:
+                ElasticsearchCollector:
+                  config:
+                    hosts: "localhost:9300"
+    relationships:
+      - type: cloudify.relationships.contained_in
+        target: elasticsearch_host
+
+  logstash:
+    type: elk.nodes.logstashServer
+    properties:
+       port: 5000
+    relationships:
+
+      ################################
+      # Setting the elasticsearch connection
+      ################################
+
+      - type: logstash_node_connected_to_elasticsearch
+        target: elasticsearch
+        properties:
+          connection_type: all_to_one
+
+      - type: logstash_node_connected_to_rabbitmqmaster
+        target: rabbitmq_master
+        properties:
+          connection_type: all_to_one
+
+      - type: cloudify.relationships.contained_in
+        target: logstash_host
+
+  kibana:
+    type: elk.nodes.kibanaServer
+    properties:
+       port: 5601
+    relationships:
+
+      ################################
+      # Setting the elasticsearch connection
+      ################################
+
+      - type: kibana_node_connected_to_elasticsearch
+        target: elasticsearch
+        properties:
+          connection_type: all_to_one
+
+
+      - type: cloudify.relationships.contained_in
+        target: kibana_host
+
+  rabbitmq_master:
+    type: elk.nodes.rabbitmqServerMaster
+    properties:
+       port: 4369
+       clusterName: { get_input: cluster_name }
+    interfaces:
+       cloudify.interfaces.monitoring:
+          start:
+            implementation: diamond.diamond_agent.tasks.add_collectors
+            inputs:
+              collectors_config:
+                RabbitMQCollector:
+                  config:
+                    hosts: "localhost:55672"
+    relationships:
+      - type: cloudify.relationships.contained_in
+        target: rabbitmq_master_host
+
+
+  rabbitmq:
+    type: elk.nodes.rabbitmqServer
+    properties:
+       port: 4369
+       clusterName: { get_input: cluster_name }
+    interfaces:
+       cloudify.interfaces.monitoring:
+          start:
+            implementation: diamond.diamond_agent.tasks.add_collectors
+            inputs:
+              collectors_config:
+                RabbitMQCollector:
+                  config:
+                    hosts: "localhost:55672"
+    relationships:
+      - type: rabbitmq_node_connected_to_rabbitmqmaster
+        target: rabbitmq_master
+      - type: cloudify.relationships.contained_in
+        target: rabbitmq_host
