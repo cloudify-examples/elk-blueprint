@@ -1,0 +1,578 @@
+tosca_definitions_version: cloudify_dsl_1_3
+
+imports:
+  - http://www.getcloudify.org/spec/cloudify/4.0/types.yaml
+  - https://raw.githubusercontent.com/cloudify-cosmo/cloudify-azure-plugin/1.4.2/plugin.yaml
+  - http://www.getcloudify.org/spec/diamond-plugin/1.3.5/plugin.yaml
+  - types/elk_stack.yaml
+  - imports/elk-blueprint.yaml
+
+inputs:
+
+  resource_prefix:
+    default: elk
+
+  resource_suffix:
+    default: '1'
+
+  # Azure account information
+
+  location:
+    type: string
+    required: true
+    default: eastus
+
+  retry_after:
+    type: integer
+    default: 60
+
+  # Existing manager resources
+  mgr_resource_group_name:
+    type: string
+    required: true
+
+  mgr_virtual_network_name:
+    type: string
+    required: true
+
+  mgr_subnet_name:
+    type: string
+    required: true
+
+  # Virtual Machine information
+
+  vm_size:
+    type: string
+    required: true
+    default: Standard_A0
+
+  vm_os_family:
+    type: string
+    required: true
+    default: linux
+
+  vm_image_publisher:
+    type: string
+    required: true
+    default: Canonical
+
+  vm_image_offer:
+    type: string
+    required: true
+    default: UbuntuServer
+
+  vm_image_sku:
+    type: string
+    required: true
+    default: 14.04.4-LTS
+
+  vm_image_version:
+    type: string
+    required: true
+    default: 14.04.201604060
+
+  agent_user:
+    description: >
+      Username to create as the VM's administrator user
+    type: string
+    required: true
+    default: cloudify
+
+  vm_os_password:
+    description: >
+      Password to use for the VM's administrator user
+    type: string
+    required: true
+    default: Cl0ud1fy!
+
+  agent_user_public_key_data:
+    default: ssh-rsa AAAAA3----your-key-here----aabbzz
+
+  vm_os_pubkeys:
+    description: the public key
+    default:
+    - path: {concat:[ '/home/', { get_input: agent_user }, '/.ssh/authorized_keys' ]}
+      keyData: { get_input: agent_user_public_key_data }
+
+  vm_os_pubkey_auth_only:
+    default: true
+
+  # Application information
+
+  webserver_port:
+    description: The external web server port
+    default: 8080
+
+  private_key_path:
+    description: >
+      This is the private key that matches the public key in input agent_user_public_key_data.
+    default: /home/cloudify/.ssh/id_rsa
+
+  agent_config:
+    default:
+      user: { get_input: agent_user }
+      key: { get_input: private_key_path }
+      install_method: remote
+      min_workers: 2
+
+dsl_definitions:
+
+  azure_config: &azure_config
+    subscription_id: { get_secret: subscription_id }
+    tenant_id: { get_secret: tenant_id }
+    client_id: { get_secret: client_id }
+    client_secret: { get_secret: client_secret }
+
+node_types:
+
+  elk.nodes.MonitoredServer:
+    derived_from: cloudify.azure.nodes.compute.VirtualMachine
+    properties:
+      azure_config:
+        default: *azure_config
+      location:
+        default: { get_input: location }
+      retry_after:
+        default: { get_input: retry_after }
+      os_family:
+        default: { get_input: vm_os_family }
+      resource_config:
+        default:
+          hardwareProfile:
+            vmSize: { get_input: vm_size }
+          storageProfile:
+            imageReference:
+              publisher: { get_input: vm_image_publisher }
+              offer: { get_input: vm_image_offer }
+              sku: { get_input: vm_image_sku }
+              version: { get_input: vm_image_version }
+          osProfile:
+            adminUsername: { get_input: agent_user }
+            adminPassword: { get_input: vm_os_password }
+            linuxConfiguration:
+              ssh:
+                publicKeys: { get_input: vm_os_pubkeys }
+              disablePasswordAuthentication: { get_input: vm_os_pubkey_auth_only }
+      agent_config:
+        default: { get_input: agent_config }
+    interfaces:
+
+      ###########################################################
+      # We are in fact telling cloudify to install a diamond
+      # monitoring agent on the server.
+      #
+      # (see https://github.com/BrightcoveOS/Diamond)
+      ###########################################################
+
+      cloudify.interfaces.monitoring_agent:
+          install:
+            implementation: diamond.diamond_agent.tasks.install
+            inputs:
+              diamond_config:
+                default:
+                  interval: 1
+          start: diamond.diamond_agent.tasks.start
+          stop: diamond.diamond_agent.tasks.stop
+          uninstall: diamond.diamond_agent.tasks.uninstall
+
+      ###########################################################
+      # Adding some collectors. These collectors are necessary
+      # for the Cloudify UI to display the deafult metrics.
+      ###########################################################
+
+      cloudify.interfaces.monitoring:
+          start:
+            implementation: diamond.diamond_agent.tasks.add_collectors
+            inputs:
+              collectors_config:
+                default:
+                  CPUCollector: {}
+                  MemoryCollector: {}
+                  LoadAverageCollector: {}
+                  DiskUsageCollector:
+                    config:
+                      devices: x?vd[a-z]+[0-9]*$
+                  NetworkCollector: {}
+
+node_templates:
+
+  resource_group:
+    type: cloudify.azure.nodes.ResourceGroup
+    properties:
+      name: {concat:[{get_input: resource_prefix},arg,{get_input: resource_suffix}]}
+      location: { get_input: location }
+      azure_config: *azure_config
+
+  storage_account:
+    type: cloudify.azure.nodes.storage.StorageAccount
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        accountType: Standard_LRS
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+
+  virtual_network:
+    type: cloudify.azure.nodes.network.VirtualNetwork
+    properties:
+      resource_group_name: { get_input: mgr_resource_group_name }
+      name: { get_input: mgr_virtual_network_name }
+      azure_config: *azure_config
+      use_external_resource: true
+      location: { get_input: location }
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+
+  subnet:
+    type: cloudify.azure.nodes.network.Subnet
+    properties:
+      resource_group_name: { get_input: mgr_resource_group_name }
+      name: { get_input: mgr_subnet_name }
+      azure_config: *azure_config
+      use_external_resource: true
+      location: { get_input: location }
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_virtual_network
+      target: virtual_network
+
+  network_security_group:
+    type: cloudify.azure.nodes.network.NetworkSecurityGroup
+    properties:
+      name: {concat:[{get_input: resource_prefix},nsg,{get_input: resource_suffix}]}
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        securityRules:
+        - name: {concat:[{get_input: resource_prefix},nsg,{get_input: resource_suffix},ssh]}
+          properties:
+            description: SSH access
+            protocol: Tcp
+            sourcePortRange: '*'
+            destinationPortRange: 22
+            sourceAddressPrefix: '*'
+            destinationAddressPrefix: '*'
+            priority: 102
+            access: Allow
+            direction: Inbound
+        - name: {concat:[{get_input: resource_prefix},nsg,{get_input: resource_suffix},pup]}
+          properties:
+            description: Puppet Communication
+            protocol: Tcp
+            sourcePortRange: '*'
+            destinationPortRange: 8140
+            sourceAddressPrefix: '*'
+            destinationAddressPrefix: '*'
+            priority: 103
+            access: Allow
+            direction: Inbound
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+
+  availability_set:
+    type: cloudify.azure.nodes.compute.AvailabilitySet
+    properties:
+      name: {concat:[{get_input: resource_prefix},availset,{get_input: resource_suffix}]}
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+
+  elasticsearch_host_nic:
+    type: cloudify.azure.nodes.network.NetworkInterfaceCard
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+    - type: cloudify.azure.relationships.nic_connected_to_network_security_group
+      target: network_security_group
+    - type: cloudify.azure.relationships.nic_connected_to_ip_configuration
+      target: elasticsearch_host_nic_ip_cfg
+
+  elasticsearch_host_nic_ip_cfg:
+    type: cloudify.azure.nodes.network.IPConfiguration
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        privateIPAllocationMethod: Dynamic
+    relationships:
+    - type: cloudify.azure.relationships.ip_configuration_connected_to_subnet
+      target: subnet
+    - type: cloudify.azure.relationships.ip_configuration_connected_to_public_ip
+      target: elasticsearch_ip
+
+  elasticsearch_ip:
+    type: cloudify.azure.nodes.network.PublicIPAddress
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        publicIPAllocationMethod: Static
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+
+  elasticsearch_host:
+    type: elk.nodes.MonitoredServer
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+    - type: cloudify.azure.relationships.connected_to_storage_account
+      target: storage_account
+    - type: cloudify.azure.relationships.connected_to_availability_set
+      target: availability_set
+    - type: cloudify.azure.relationships.connected_to_nic
+      target: elasticsearch_host_nic
+
+  logstash_host_nic:
+    type: cloudify.azure.nodes.network.NetworkInterfaceCard
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+    - type: cloudify.azure.relationships.nic_connected_to_network_security_group
+      target: network_security_group
+    - type: cloudify.azure.relationships.nic_connected_to_ip_configuration
+      target: logstash_host_nic_ip_cfg
+
+  logstash_host_nic_ip_cfg:
+    type: cloudify.azure.nodes.network.IPConfiguration
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        privateIPAllocationMethod: Dynamic
+    relationships:
+    - type: cloudify.azure.relationships.ip_configuration_connected_to_subnet
+      target: subnet
+    - type: cloudify.azure.relationships.ip_configuration_connected_to_public_ip
+      target: logstash_ip
+
+  logstash_ip:
+    type: cloudify.azure.nodes.network.PublicIPAddress
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        publicIPAllocationMethod: Static
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+
+  logstash_host:
+    type: elk.nodes.MonitoredServer
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+    - type: cloudify.azure.relationships.connected_to_storage_account
+      target: storage_account
+    - type: cloudify.azure.relationships.connected_to_availability_set
+      target: availability_set
+    - type: cloudify.azure.relationships.connected_to_nic
+      target: logstash_host_nic
+
+  kibana_host_nic:
+    type: cloudify.azure.nodes.network.NetworkInterfaceCard
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+    - type: cloudify.azure.relationships.nic_connected_to_network_security_group
+      target: network_security_group
+    - type: cloudify.azure.relationships.nic_connected_to_ip_configuration
+      target: kibana_host_nic_ip_cfg
+
+  kibana_host_nic_ip_cfg:
+    type: cloudify.azure.nodes.network.IPConfiguration
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        privateIPAllocationMethod: Dynamic
+    relationships:
+    - type: cloudify.azure.relationships.ip_configuration_connected_to_subnet
+      target: subnet
+    - type: cloudify.azure.relationships.ip_configuration_connected_to_public_ip
+      target: kibana_ip
+
+  kibana_ip:
+    type: cloudify.azure.nodes.network.PublicIPAddress
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        publicIPAllocationMethod: Static
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+
+  kibana_host:
+    type: elk.nodes.MonitoredServer
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+    - type: cloudify.azure.relationships.connected_to_storage_account
+      target: storage_account
+    - type: cloudify.azure.relationships.connected_to_availability_set
+      target: availability_set
+    - type: cloudify.azure.relationships.connected_to_nic
+      target: kibana_host_nic
+
+  rabbitmq_master_host_nic:
+    type: cloudify.azure.nodes.network.NetworkInterfaceCard
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+    - type: cloudify.azure.relationships.nic_connected_to_network_security_group
+      target: network_security_group
+    - type: cloudify.azure.relationships.nic_connected_to_ip_configuration
+      target: rabbitmq_master_host_nic_ip_cfg
+
+  rabbitmq_master_host_nic_ip_cfg:
+    type: cloudify.azure.nodes.network.IPConfiguration
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        privateIPAllocationMethod: Dynamic
+    relationships:
+    - type: cloudify.azure.relationships.ip_configuration_connected_to_subnet
+      target: subnet
+    - type: cloudify.azure.relationships.ip_configuration_connected_to_public_ip
+      target: rabbitmq_master_ip
+
+  rabbitmq_master_ip:
+    type: cloudify.azure.nodes.network.PublicIPAddress
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        publicIPAllocationMethod: Static
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+
+  rabbitmq_master_host:
+    type: elk.nodes.MonitoredServer
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+    - type: cloudify.azure.relationships.connected_to_storage_account
+      target: storage_account
+    - type: cloudify.azure.relationships.connected_to_availability_set
+      target: availability_set
+    - type: cloudify.azure.relationships.connected_to_nic
+      target: rabbitmq_master_host_nic
+
+  rabbitmq_host_nic:
+    type: cloudify.azure.nodes.network.NetworkInterfaceCard
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+    - type: cloudify.azure.relationships.nic_connected_to_network_security_group
+      target: network_security_group
+    - type: cloudify.azure.relationships.nic_connected_to_ip_configuration
+      target: rabbitmq_host_nic_ip_cfg
+
+  rabbitmq_host_nic_ip_cfg:
+    type: cloudify.azure.nodes.network.IPConfiguration
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        privateIPAllocationMethod: Dynamic
+    relationships:
+    - type: cloudify.azure.relationships.ip_configuration_connected_to_subnet
+      target: subnet
+    - type: cloudify.azure.relationships.ip_configuration_connected_to_public_ip
+      target: rabbitmq_ip
+
+  rabbitmq_ip:
+    type: cloudify.azure.nodes.network.PublicIPAddress
+    properties:
+      location: { get_input: location }
+      azure_config: *azure_config
+      retry_after: { get_input: retry_after }
+      resource_config:
+        publicIPAllocationMethod: Static
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+
+  rabbitmq_host:
+    type: elk.nodes.MonitoredServer
+    relationships:
+    - type: cloudify.azure.relationships.contained_in_resource_group
+      target: resource_group
+    - type: cloudify.azure.relationships.connected_to_storage_account
+      target: storage_account
+    - type: cloudify.azure.relationships.connected_to_availability_set
+      target: availability_set
+    - type: cloudify.azure.relationships.connected_to_nic
+      target: rabbitmq_host_nic
+
+outputs:
+
+  elasticsearch_endpoint:
+    description: Elasticsearch endpoint
+    value:
+      ip_address: { get_attribute: [ elasticsearch_host, public_ip ] }
+      port: { get_property: [ elasticsearch, port ] }
+
+  logstash_endpoint:
+    description: Logstash endpoint
+    value:
+      ip_address: { get_attribute: [ logstash_host, public_ip ] }
+      port: { get_property: [ logstash, port ] }
+
+  kibana_endpoint:
+    description: Kibana endpoint
+    value:
+      ip_address: { get_attribute: [ kibana, public_ip ] }
+      port: { get_property: [ kibana, port ] }
+
+  rabbitmq_endpoint:
+    description: RabbitMQ endpoint
+    value:
+      ip_address: { get_attribute: [ rabbitmq_host, public_ip ] }
+      port: { get_property: [ rabbitmq, port ] }
+
+  rabbitmq_master_endpoint:
+    description: RabbitMQ_Master endpoint
+    value:
+      ip_address: { get_attribute: [ rabbitmq_master_host, public_ip ] }
+      port: { get_property: [ rabbitmq_master, port ] }
