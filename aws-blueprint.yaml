@@ -1,50 +1,28 @@
 tosca_definitions_version: cloudify_dsl_1_3
 
 imports:
-  - http://www.getcloudify.org/spec/cloudify/4.0/types.yaml
-  - http://getcloudify.org.s3.amazonaws.com/spec/aws-plugin/1.4.4/plugin.yaml
+  - http://www.getcloudify.org/spec/cloudify/4.0.1/types.yaml
+  - http://getcloudify.org.s3.amazonaws.com/spec/aws-plugin/1.4.10/plugin.yaml
   - http://www.getcloudify.org/spec/diamond-plugin/1.3.5/plugin.yaml
   - types/elk_stack.yaml
   - imports/elk-blueprint.yaml
+  - types/cloud_config/cloud-config.yaml
 
 inputs:
 
-  key_name:
-    default: elk-blueprint-key
-
-  private_key_path:
-    default: ~/.ssh/elk-blueprint-key.pem
-
-  vpc_id:
-    type: string
-
-  vpc_cidr_block:
-    type: string
-
-  subnet_id:
-    type: string
-
-  subnet_cidr:
-    type: string
-
-  ec2_region_name:
-    default: us-east-1
-
-  ec2_region_endpoint:
-    default: ec2.us-east-1.amazonaws.com
-
-  availability_zone:
-    default: us-east-1e
-
   ami:
     description: >
-      Amazon Ubuntu 14.04 AMI
+      An AWS AMI. Tested with a Ubuntu 14.04 image.
+    default: { get_secret: ubuntu_trusty_image }
 
   instance_type:
     description: >
-      Agent VM Instance Type
+      The AWS instance_type. Tested with m3.medium, although that is unnecessarily large.
+    default: t2.micro
 
   agent_user:
+    description: >
+      The username of the agent running on the instance created from the image.
     default: ubuntu
 
 dsl_definitions:
@@ -52,38 +30,38 @@ dsl_definitions:
     aws_config: &aws_config
       aws_access_key_id: { get_secret: aws_access_key_id }
       aws_secret_access_key: { get_secret: aws_secret_access_key }
-      ec2_region_name: { get_input: ec2_region_name }
-      ec2_region_endpoint: { get_input: ec2_region_endpoint }
+      ec2_region_name: { get_secret: ec2_region_name }
+      ec2_region_endpoint: { get_secret: ec2_region_endpoint }
 
 node_types:
 
   elk.nodes.MonitoredServer:
     derived_from: cloudify.aws.nodes.Instance
     properties:
-      agent_config:
-        default:
-          install_method: remote
-          port: 22
-          user: { get_input: agent_user }
-          key: { get_property: [ key, private_key_path ] }
       aws_config:
         default: *aws_config
       image_id:
         default: { get_input: ami }
       instance_type:
         default: { get_input: instance_type }
-      parameters:
+      agent_config:
         default:
-          placement: { get_property: [ subnet, availability_zone ] }
+          install_method: remote
+          user: { get_input: agent_user }
+          port: 22
+          key: { get_secret: agent_key_private }
     interfaces:
-
-      ###########################################################
-      # We are in fact telling cloudify to install a diamond
-      # monitoring agent on the server.
-      #
-      # (see https://github.com/BrightcoveOS/Diamond)
-      ###########################################################
-
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: aws.cloudify_aws.ec2.instance.create
+          inputs:
+            args:
+              default:
+                block_device_map:
+                  '/dev/sda1':
+                    delete_on_termination: true
+                placement: { get_secret: availability_zone }
+                user_data: { get_attribute: [ cloudify_host_cloud_config, cloud_config ] }
       cloudify.interfaces.monitoring_agent:
           install:
             implementation: diamond.diamond_agent.tasks.install
@@ -94,12 +72,6 @@ node_types:
           start: diamond.diamond_agent.tasks.start
           stop: diamond.diamond_agent.tasks.stop
           uninstall: diamond.diamond_agent.tasks.uninstall
-
-      ###########################################################
-      # Adding some collectors. These collectors are necessary
-      # for the Cloudify UI to display the deafult metrics.
-      ###########################################################
-
       cloudify.interfaces.monitoring:
           start:
             implementation: diamond.diamond_agent.tasks.add_collectors
@@ -114,20 +86,11 @@ node_types:
                       devices: x?vd[a-z]+[0-9]*$
                   NetworkCollector: {}
 
-
 node_templates:
-
-  # Application Nodes are imported from imports/elk-blueprint.yaml. See #imports
 
   elasticsearch_host:
     type: elk.nodes.MonitoredServer
-    capabilities:
-      scalable:
-        properties:
-          default_instances: 1
     relationships:
-      - type: cloudify.aws.relationships.instance_connected_to_keypair
-        target: key
       - type: cloudify.aws.relationships.instance_connected_to_subnet
         target: subnet
       - type: cloudify.aws.relationships.instance_connected_to_security_group
@@ -140,8 +103,6 @@ node_templates:
   logstash_host:
     type: elk.nodes.MonitoredServer
     relationships:
-      - type: cloudify.aws.relationships.instance_connected_to_keypair
-        target: key
       - type: cloudify.aws.relationships.instance_connected_to_subnet
         target: subnet
       - type: cloudify.aws.relationships.instance_connected_to_security_group
@@ -154,8 +115,6 @@ node_templates:
   kibana_host:
     type: elk.nodes.MonitoredServer
     relationships:
-      - type: cloudify.aws.relationships.instance_connected_to_keypair
-        target: key
       - type: cloudify.aws.relationships.instance_connected_to_subnet
         target: subnet
       - type: cloudify.aws.relationships.instance_connected_to_security_group
@@ -168,8 +127,6 @@ node_templates:
   rabbitmq_master_host:
     type: elk.nodes.MonitoredServer
     relationships:
-      - type: cloudify.aws.relationships.instance_connected_to_keypair
-        target: key
       - type: cloudify.aws.relationships.instance_connected_to_subnet
         target: subnet
       - type: cloudify.aws.relationships.instance_connected_to_security_group
@@ -181,13 +138,7 @@ node_templates:
 
   rabbitmq_host:
     type: elk.nodes.MonitoredServer
-    capabilities:
-      scalable:
-        properties:
-          default_instances: 1
     relationships:
-      - type: cloudify.aws.relationships.instance_connected_to_keypair
-        target: key
       - type: cloudify.aws.relationships.instance_connected_to_subnet
         target: subnet
       - type: cloudify.aws.relationships.instance_connected_to_security_group
@@ -196,35 +147,6 @@ node_templates:
         target: rabbitmq_security_group
       - type: cloudify.aws.relationships.instance_connected_to_elastic_ip
         target: rabbitmq_floatingip
-
-  subnet:
-    type: cloudify.aws.nodes.Subnet
-    properties:
-      aws_config: *aws_config
-      use_external_resource: true
-      resource_id: { get_input: subnet_id }
-      cidr_block: { get_input: subnet_cidr }
-      availability_zone: { get_input: availability_zone }
-    relationships:
-      - type: cloudify.aws.relationships.subnet_contained_in_vpc
-        target: vpc
-
-  vpc:
-    type: cloudify.aws.nodes.VPC
-    properties:
-      aws_config: *aws_config
-      use_external_resource: true
-      resource_id: { get_input: vpc_id }
-      cidr_block: { get_input: vpc_cidr_block }
-
-  key:
-    type: cloudify.aws.nodes.KeyPair
-    properties:
-      aws_config: *aws_config
-      resource_id: { get_input: key_name }
-      private_key_path: { get_input: private_key_path }
-
-  # Security Groups
 
   ssh_group:
     type: cloudify.aws.nodes.SecurityGroup
@@ -235,7 +157,7 @@ node_templates:
         - ip_protocol: tcp
           from_port: 22
           to_port: 22
-          cidr_ip: { get_input: vpc_cidr_block }
+          cidr_ip: 0.0.0.0/0
     relationships:
       - type: cloudify.aws.relationships.security_group_contained_in_vpc
         target: vpc
@@ -257,7 +179,7 @@ node_templates:
         - ip_protocol: tcp
           from_port: { get_property: [ elasticsearch, port ] }
           to_port: { get_property: [ elasticsearch, port ] }
-          cidr_ip: { get_input: vpc_cidr_block }
+          cidr_ip: 0.0.0.0/0
     relationships:
       - type: cloudify.aws.relationships.security_group_contained_in_vpc
         target: vpc
@@ -271,7 +193,7 @@ node_templates:
         - ip_protocol: tcp
           from_port: { get_property: [ logstash, port ] }
           to_port: { get_property: [ logstash, port ] }
-          cidr_ip: { get_input: vpc_cidr_block }
+          cidr_ip: 0.0.0.0/0
     relationships:
       - type: cloudify.aws.relationships.security_group_contained_in_vpc
         target: vpc
@@ -285,7 +207,7 @@ node_templates:
         - ip_protocol: tcp
           from_port: { get_property: [ kibana, port ] }
           to_port: { get_property: [ kibana, port ] }
-          cidr_ip: { get_input: vpc_cidr_block }
+          cidr_ip: 0.0.0.0/0
     relationships:
       - type: cloudify.aws.relationships.security_group_contained_in_vpc
         target: vpc
@@ -315,7 +237,7 @@ node_templates:
         - ip_protocol: tcp
           from_port: { get_property: [ rabbitmq, port ] }
           to_port: { get_property: [ rabbitmq, port ] }
-          cidr_ip: { get_input: vpc_cidr_block }
+          cidr_ip: 0.0.0.0/0
     relationships:
       - type: cloudify.aws.relationships.security_group_contained_in_vpc
         target: vpc
@@ -351,6 +273,44 @@ node_templates:
     properties:
       aws_config: *aws_config
       domain: vpc
+
+  subnet:
+    type: cloudify.aws.nodes.Subnet
+    properties:
+      aws_config: *aws_config
+      use_external_resource: true
+      resource_id: { get_secret: public_subnet_id }
+      cidr_block: N/A
+      availability_zone: N/A
+    relationships:
+      - type: cloudify.aws.relationships.subnet_contained_in_vpc
+        target: vpc
+
+  vpc:
+    type: cloudify.aws.nodes.VPC
+    properties:
+      aws_config: *aws_config
+      use_external_resource: true
+      resource_id: { get_secret: vpc_id }
+      cidr_block: N/A
+    relationships:
+      - type: cloudify.relationships.depends_on
+        target: cloudify_host_cloud_config
+
+  cloudify_host_cloud_config:
+    type: cloudify.nodes.CloudConfig
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          inputs:
+            cloud_config:
+              users:
+              - name: { get_input: agent_user }
+                groups: sudo
+                shell: /bin/bash
+                sudo: ['ALL=(ALL) NOPASSWD:ALL']
+                ssh-authorized-keys:
+                - { get_secret: agent_key_public }
 
 outputs:
 

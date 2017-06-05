@@ -1,64 +1,28 @@
-###########################################################
-# This Blueprint installs the ELK Stack
-# on an openstack cloud environment.
-###########################################################
-
 tosca_definitions_version: cloudify_dsl_1_3
 
 imports:
-  - http://www.getcloudify.org/spec/cloudify/4.0/types.yaml
+  - http://www.getcloudify.org/spec/cloudify/4.0.1/types.yaml
   - http://www.getcloudify.org/spec/openstack-plugin/2.0.1/plugin.yaml
   - http://www.getcloudify.org/spec/diamond-plugin/1.3.5/plugin.yaml
   - types/elk_stack.yaml
   - imports/elk-blueprint.yaml
-
-#####################################################################################
-# inputs section allows the user to use same
-# blueprint for creating different deployments, each one
-# with its own parameters.
-# to specify deployment inputs run:
-#   - cfy deployments create -b <blueprint_id> -d <deployment_id> -i inputs.json
-#####################################################################################
+  - types/cloud_config/cloud-config.yaml
 
 inputs:
 
   image:
     description: >
-      Image to be used when launching agent VM's
+      An Openstack Image ID. Tested with a Ubuntu 14.04 image.
+    default: { get_secret: ubuntu_trusty_image }
 
   flavor:
     description: >
-      Flavor of the agent VM's
+      An Openstack Flavor ID.
+    default: { get_secret: small_image_flavor }
 
   agent_user:
-    description: >
-      User for connecting to agent VM's
-
-  key_name:
-    description: >
-      the agent public key name (created during manager bootstrap)
-    type: string
-    default: elk-blueprint-key
-
-  private_key_path:
-    type: string
-    default: ~/.ssh/elk-blueprint-key.pem
-
-  region:
-    default: ''
-
-  external_network_name:
-    type: string
-    default: external
-
-  router_name:
-    description: The Router Name
-
-  public_network_name:
-    description: The name of the Openstack public network.
-
-  public_subnet_name:
-    description: The name of the public network subnet.
+    description: The user name of the agent on the instance created from the image.
+    default: ubuntu
 
 dsl_definitions:
 
@@ -67,43 +31,29 @@ dsl_definitions:
     password: { get_secret: keystone_password }
     tenant_name: { get_secret: keystone_tenant_name }
     auth_url: { get_secret: keystone_url }
-    region: { get_input: region }
+    region: { get_secret: region }
 
 node_types:
-
-  ###########################################################
-  # We define a type that inherits openstack's default
-  # server, and adds monitoring capabillities on top of it.
-  ###########################################################
 
   elk.nodes.MonitoredServer:
     derived_from: cloudify.openstack.nodes.Server
     properties:
       openstack_config:
-        default:
-          *openstack_config
+        default: *openstack_config
       agent_config:
         default:
           user: { get_input: agent_user }
-          key: { get_property: [ key, private_key_path ] }
           install_method: remote
           port: 22
+          key: { get_secret: agent_key_private }
       server:
         default:
+          key_name: ''
           image: { get_input: image }
           flavor: { get_input: flavor }
       management_network_name:
-        default:
-          { get_property: [ public_network, resource_id ] }
+        default: { get_property: [ public_network, resource_id ] }
     interfaces:
-
-      ###########################################################
-      # We are in fact telling cloudify to install a diamond
-      # monitoring agent on the server.
-      #
-      # (see https://github.com/BrightcoveOS/Diamond)
-      ###########################################################
-
       cloudify.interfaces.monitoring_agent:
           install:
             implementation: diamond.diamond_agent.tasks.install
@@ -114,12 +64,6 @@ node_types:
           start: diamond.diamond_agent.tasks.start
           stop: diamond.diamond_agent.tasks.stop
           uninstall: diamond.diamond_agent.tasks.uninstall
-
-      ###########################################################
-      # Adding some collectors. These collectors are necessary
-      # for the Cloudify UI to display the deafult metrics.
-      ###########################################################
-
       cloudify.interfaces.monitoring:
           start:
             implementation: diamond.diamond_agent.tasks.add_collectors
@@ -133,269 +77,47 @@ node_types:
                     config:
                       devices: x?vd[a-z]+[0-9]*$
                   NetworkCollector: {}
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: openstack.nova_plugin.server.create
+          inputs:
+            args:
+              default:
+                image: { get_input: image }
+                flavor: { get_input: flavor }
+                userdata: { get_attribute: [ cloudify_host_cloud_config, cloud_config ] }
 
 node_templates:
 
- ########## Hosts ###################
-
   elasticsearch_host:
     type: elk.nodes.MonitoredServer
-    capabilities:
-      scalable:
-        properties:
-          default_instances: 1
     relationships:
-      ###########################################################
-      # Attaching a floating ip to each elasticsearch host
-      ###########################################################
-      #$$ Remove before commit
-      - target: key
-        type: cloudify.openstack.server_connected_to_keypair
       - target: elasticsearch_host_port
         type: cloudify.openstack.server_connected_to_port
 
   logstash_host:
     type: elk.nodes.MonitoredServer
     relationships:
-
-      ###########################################################
-      # Attaching a floating ip to the logstash host
-      ###########################################################
-      #$$ Remove before commit
-      - target: key
-        type: cloudify.openstack.server_connected_to_keypair
       - target: logstash_host_port
         type: cloudify.openstack.server_connected_to_port
 
   kibana_host:
     type: elk.nodes.MonitoredServer
     relationships:
-
-      ###########################################################
-      # Attaching a floating ip to the kibana host
-      ###########################################################
-
-      - target: key
-        type: cloudify.openstack.server_connected_to_keypair
       - target: kibana_host_port
         type: cloudify.openstack.server_connected_to_port
 
   rabbitmq_master_host:
     type: elk.nodes.MonitoredServer
     relationships:
-      ###########################################################
-      # Attaching a floating ip to each rabbitmq_ host
-      ###########################################################
-
-      - target: key
-        type: cloudify.openstack.server_connected_to_keypair
       - target: rabbitmq_master_host_port
         type: cloudify.openstack.server_connected_to_port
 
   rabbitmq_host:
     type: elk.nodes.MonitoredServer
-    capabilities:
-      scalable:
-        properties:
-          default_instances: 1
     relationships:
-      ###########################################################
-      # Attaching a floating ip to each rabbitmq_ host
-      ###########################################################
-
-      - target: key
-        type: cloudify.openstack.server_connected_to_keypair
       - target: rabbitmq_host_port
         type: cloudify.openstack.server_connected_to_port
-
-  ###########################################################
-  # A security group to enable access to the elasticsearch host
-  # using the ports of the elsticsearch node.
-  # default ports are on the range of 9200-9300 TCP
-  # Both logstash and kibana need it to communicate 
-  # with elasticsearch, since they run on
-  # different hosts.
-  ###########################################################
-
-  elasticsearch_security_group:
-    type: cloudify.openstack.nodes.SecurityGroup
-    properties:
-      openstack_config: *openstack_config
-      security_group:
-        name: elasticsearch_security_group
-      rules:
-        - remote_ip_prefix: 0.0.0.0/0
-          port: { get_property: [ elasticsearch, port ] }
-        - remote_ip_prefix: 0.0.0.0/0
-          port: 9200
-        - remote_ip_prefix: 0.0.0.0/0
-          port: 54328
-          protocol: udp
-
-  ###########################################################
-  # A security group to enable access to the logstash host.
-  # Should open port 5000 TCP or UDP or other configured port
-  #  for Logstash to listen on.
-  # This security group will be attached to the logstash_host
-  ###########################################################
-
-  logstash_security_group:
-    type: cloudify.openstack.nodes.SecurityGroup
-    properties:
-      openstack_config: *openstack_config
-      security_group:
-        name: logstash_security_group
-      rules:
-        - remote_ip_prefix: 0.0.0.0/0
-          port: { get_property: [ logstash, port ] }
-
-  ###########################################################
-  # A security group to enable web access to the kibana host.
-  # by default kibana listens on port 5601 TCP
-  # This security group will be attached to the kibana_host
-  ###########################################################
-
-  kibana_security_group:
-    type: cloudify.openstack.nodes.SecurityGroup
-    properties:
-      openstack_config: *openstack_config
-      security_group:
-        name: kibana_security_group
-      rules:
-        - remote_ip_prefix: 0.0.0.0/0
-          port: { get_property: [ kibana, port ] }
-
-  
-  rabbitmq_security_group:
-    type: cloudify.openstack.nodes.SecurityGroup
-    properties:
-      openstack_config: *openstack_config
-      security_group:
-        name: rabbitmq_security_group
-      rules:
-        - remote_ip_prefix: 0.0.0.0/0
-          port: { get_property: [ rabbitmq, port ] }
-        - remote_ip_prefix: 0.0.0.0/0
-          port: 54328
-        - remote_ip_prefix: 0.0.0.0/0
-          port: 15672
-        - remote_ip_prefix: 0.0.0.0/0
-          port: 5672
-        - remote_ip_prefix: 0.0.0.0/0
-          port: 25672
-
-  ssh_security_group:
-    type: cloudify.openstack.nodes.SecurityGroup
-    properties:
-      openstack_config: *openstack_config
-      security_group:
-        name: ssh_security_group
-        description: SSH Group
-      rules:
-        - port: 22
-          remote_ip_prefix: 0.0.0.0/0
-
-  public_subnet:
-    type: cloudify.openstack.nodes.Subnet
-    properties:
-      openstack_config: *openstack_config
-      use_external_resource: true
-      resource_id: { get_input: public_subnet_name }
-    relationships:
-      - target: public_network
-        type: cloudify.relationships.contained_in
-      - target: router
-        type: cloudify.openstack.subnet_connected_to_router
-
-  public_network:
-    type: cloudify.openstack.nodes.Network
-    properties:
-      openstack_config: *openstack_config
-      use_external_resource: true
-      resource_id: { get_input: public_network_name }
-
-  router:
-    type: cloudify.openstack.nodes.Router
-    properties:
-      openstack_config: *openstack_config
-      use_external_resource: true
-      resource_id: { get_input: router_name }
-    relationships:
-      - target: external_network
-        type: cloudify.relationships.connected_to
-
-  external_network:
-    type: cloudify.openstack.nodes.Network
-    properties:
-      openstack_config: *openstack_config
-      use_external_resource: true
-      resource_id: { get_input: external_network_name }
-
-  key:
-    type: cloudify.openstack.nodes.KeyPair
-    properties:
-      openstack_config: *openstack_config
-      resource_id: { get_input: key_name }
-      private_key_path: { get_input: private_key_path }
-
- ##########################################################
- # A floating ip to be attached to the rabbitmq host, 
- # as we should be able to access it
- # from any machine.
- ###########################################################
- 
-  rabbitmq_floatingip:
-    type: cloudify.openstack.nodes.FloatingIP
-    properties:
-      openstack_config: *openstack_config
-      floatingip:
-        floating_network_name: { get_property: [ external_network, resource_id ] }
-
-  rabbitmq_master_floatingip:
-    type: cloudify.openstack.nodes.FloatingIP
-    properties:
-      openstack_config: *openstack_config
-      floatingip:
-        floating_network_name: { get_property: [ external_network, resource_id ] }
- ###########################################################
- # A floating ip to be attached to the elasticsearch host, 
- # as we should be able to access it
- # from any machine.
- ###########################################################
- #$$ Remove before commit
-  elasticsearch_floatingip:
-    type: cloudify.openstack.nodes.FloatingIP
-    properties:
-      openstack_config: *openstack_config
-      floatingip:
-        floating_network_name: { get_property: [ external_network, resource_id ] }
-###########################################################
-# A floating ip to be attached to the logstash host, 
-# as we should be able to access it
-# from any machine, on any network.
-###########################################################
-#$$ Remove before commit
-  logstash_floatingip:
-    type: cloudify.openstack.nodes.FloatingIP
-    properties:
-      openstack_config: *openstack_config
-      floatingip:
-        floating_network_name: { get_property: [ external_network, resource_id ] }
-
-###########################################################
-# A floating ip to be attached to the logstash host, 
-# as we should be able to access it
-# from any machine, on any network.
-###########################################################
-
-  kibana_floatingip:
-    type: cloudify.openstack.nodes.FloatingIP
-    properties:
-      openstack_config: *openstack_config
-      floatingip:
-        floating_network_name: { get_property: [ external_network, resource_id ] }
-
-###########################################################
 
   kibana_host_port:
     type: cloudify.openstack.nodes.Port
@@ -477,20 +199,183 @@ node_templates:
       - type: cloudify.openstack.port_connected_to_floating_ip
         target: rabbitmq_floatingip
 
-###########################################################
-# This outputs section exposes the application endpoint.
-# You can access it by running:
-#   - cfy deployments -d <deployment_id> outputs
-###########################################################
+  elasticsearch_security_group:
+    type: cloudify.openstack.nodes.SecurityGroup
+    properties:
+      openstack_config: *openstack_config
+      security_group:
+        name: elasticsearch_security_group
+      rules:
+        - remote_ip_prefix: 0.0.0.0/0
+          port: { get_property: [ elasticsearch, port ] }
+        - remote_ip_prefix: 0.0.0.0/0
+          port: 9200
+        - remote_ip_prefix: 0.0.0.0/0
+          port: 54328
+          protocol: udp
+
+  logstash_security_group:
+    type: cloudify.openstack.nodes.SecurityGroup
+    properties:
+      openstack_config: *openstack_config
+      security_group:
+        name: logstash_security_group
+      rules:
+        - remote_ip_prefix: 0.0.0.0/0
+          port: { get_property: [ logstash, port ] }
+
+  kibana_security_group:
+    type: cloudify.openstack.nodes.SecurityGroup
+    properties:
+      openstack_config: *openstack_config
+      security_group:
+        name: kibana_security_group
+      rules:
+        - remote_ip_prefix: 0.0.0.0/0
+          port: { get_property: [ kibana, port ] }
+
+  rabbitmq_security_group:
+    type: cloudify.openstack.nodes.SecurityGroup
+    properties:
+      openstack_config: *openstack_config
+      security_group:
+        name: rabbitmq_security_group
+      rules:
+        - remote_ip_prefix: 0.0.0.0/0
+          port: { get_property: [ rabbitmq, port ] }
+        - remote_ip_prefix: 0.0.0.0/0
+          port: 54328
+        - remote_ip_prefix: 0.0.0.0/0
+          port: 15672
+        - remote_ip_prefix: 0.0.0.0/0
+          port: 5672
+        - remote_ip_prefix: 0.0.0.0/0
+          port: 25672
+
+  ssh_security_group:
+    type: cloudify.openstack.nodes.SecurityGroup
+    properties:
+      openstack_config: *openstack_config
+      security_group:
+        name: ssh_security_group
+        description: SSH Group
+      rules:
+        - port: 22
+          remote_ip_prefix: 0.0.0.0/0
+
+  private_subnet:
+    type: cloudify.openstack.nodes.Subnet
+    properties:
+      openstack_config: *openstack_config
+      use_external_resource: true
+      resource_id: { get_secret: private_subnet_name }
+    relationships:
+      - target: private_network
+        type: cloudify.relationships.contained_in
+
+  private_network:
+    type: cloudify.openstack.nodes.Network
+    properties:
+      openstack_config: *openstack_config
+      use_external_resource: true
+      resource_id: { get_secret: private_network_name }
+
+  public_subnet:
+    type: cloudify.openstack.nodes.Subnet
+    properties:
+      openstack_config: *openstack_config
+      use_external_resource: true
+      resource_id: { get_secret: public_subnet_name }
+    relationships:
+      - target: public_network
+        type: cloudify.relationships.contained_in
+      - target: router
+        type: cloudify.openstack.subnet_connected_to_router
+
+  public_network:
+    type: cloudify.openstack.nodes.Network
+    properties:
+      openstack_config: *openstack_config
+      use_external_resource: true
+      resource_id: { get_secret: public_network_name }
+
+  router:
+    type: cloudify.openstack.nodes.Router
+    properties:
+      openstack_config: *openstack_config
+      use_external_resource: true
+      resource_id: { get_secret: router_name }
+    relationships:
+      - target: external_network
+        type: cloudify.relationships.connected_to
+
+  external_network:
+    type: cloudify.openstack.nodes.Network
+    properties:
+      openstack_config: *openstack_config
+      use_external_resource: true
+      resource_id: { get_secret: external_network_name }
+    relationships:
+      - type: cloudify.relationships.depends_on
+        target: cloudify_host_cloud_config
+
+  cloudify_host_cloud_config:
+    type: cloudify.nodes.CloudConfig
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          inputs:
+            cloud_config:
+              users:
+                - name: { get_input: agent_user }
+                  shell: /bin/bash
+                  sudo: ['ALL=(ALL) NOPASSWD:ALL']
+                  ssh-authorized-keys:
+                    - { get_secret: agent_key_public }
+
+  rabbitmq_floatingip:
+    type: cloudify.openstack.nodes.FloatingIP
+    properties:
+      openstack_config: *openstack_config
+      floatingip:
+        floating_network_name: { get_property: [ external_network, resource_id ] }
+
+  rabbitmq_master_floatingip:
+    type: cloudify.openstack.nodes.FloatingIP
+    properties:
+      openstack_config: *openstack_config
+      floatingip:
+        floating_network_name: { get_property: [ external_network, resource_id ] }
+
+  elasticsearch_floatingip:
+    type: cloudify.openstack.nodes.FloatingIP
+    properties:
+      openstack_config: *openstack_config
+      floatingip:
+        floating_network_name: { get_property: [ external_network, resource_id ] }
+
+  logstash_floatingip:
+    type: cloudify.openstack.nodes.FloatingIP
+    properties:
+      openstack_config: *openstack_config
+      floatingip:
+        floating_network_name: { get_property: [ external_network, resource_id ] }
+
+  kibana_floatingip:
+    type: cloudify.openstack.nodes.FloatingIP
+    properties:
+      openstack_config: *openstack_config
+      floatingip:
+        floating_network_name: { get_property: [ external_network, resource_id ] }
 
 outputs:
-#$$ Remove before commit
+
   elasticsearch_endpoint:
     description: Elasticsearch endpoint
     value:
       ip_address: { get_attribute: [ elasticsearch_floatingip, floating_ip_address ] }
       port: { get_property: [ elasticsearch, port ] }
-#$$ Remove before commit
+
   logstash_endpoint:
     description: Logstash endpoint
     value:    
@@ -503,6 +388,7 @@ outputs:
     value:    
       ip_address: { get_attribute: [ kibana_floatingip, floating_ip_address ] }
       port: { get_property: [ kibana, port ] }
+
   rabbitmq_endpoint:
     description: RabbitMQ endpoint
     value:    
