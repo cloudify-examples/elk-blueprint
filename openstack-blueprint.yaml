@@ -10,6 +10,49 @@ imports:
 
 inputs:
 
+  keystone_username:
+    default: { get_secret: keystone_username }
+
+  keystone_password:
+    default: { get_secret: keystone_password }
+
+  keystone_tenant_name:
+    default: { get_secret: keystone_tenant_name }
+
+  keystone_url:
+    default: { get_secret: keystone_url }
+
+  region:
+    default: { get_secret: region }
+
+  external_network_name:
+    default: { get_secret: external_network_name }
+
+  router_name:
+    default: { get_secret: router_name }
+
+  public_network_name:
+    default: { get_secret: public_network_name }
+
+  private_network_name:
+    default: { get_secret: public_network_name }
+
+  public_subnet_name:
+    default: { get_secret: public_subnet_name }
+
+  private_subnet_name:
+    default: { get_secret: public_subnet_name }
+
+  agent_key_private:
+    description: >
+      The content of the agent's private key.
+    default: { get_secret: agent_key_private }
+
+  agent_key_public:
+    description: >
+      The content of the agent's public key.
+    default: { get_secret: agent_key_public }
+
   image:
     description: >
       An Openstack Image ID. Tested with a Ubuntu 14.04 image.
@@ -27,11 +70,11 @@ inputs:
 dsl_definitions:
 
   openstack_config: &openstack_config
-    username: { get_secret: keystone_username }
-    password: { get_secret: keystone_password }
-    tenant_name: { get_secret: keystone_tenant_name }
-    auth_url: { get_secret: keystone_url }
-    region: { get_secret: region }
+    username: { get_input: keystone_username }
+    password: { get_input: keystone_password }
+    tenant_name: { get_input: keystone_tenant_name }
+    auth_url: { get_input: keystone_url }
+    region: { get_input: region }
 
 node_types:
 
@@ -45,7 +88,7 @@ node_types:
           user: { get_input: agent_user }
           install_method: remote
           port: 22
-          key: { get_secret: agent_key_private }
+          key: { get_input: agent_key_private }
       server:
         default:
           key_name: ''
@@ -266,7 +309,7 @@ node_templates:
     properties:
       openstack_config: *openstack_config
       use_external_resource: true
-      resource_id: { get_secret: private_subnet_name }
+      resource_id: { get_input: private_subnet_name }
     relationships:
       - target: private_network
         type: cloudify.relationships.contained_in
@@ -276,14 +319,14 @@ node_templates:
     properties:
       openstack_config: *openstack_config
       use_external_resource: true
-      resource_id: { get_secret: private_network_name }
+      resource_id: { get_input: private_network_name }
 
   public_subnet:
     type: cloudify.openstack.nodes.Subnet
     properties:
       openstack_config: *openstack_config
       use_external_resource: true
-      resource_id: { get_secret: public_subnet_name }
+      resource_id: { get_input: public_subnet_name }
     relationships:
       - target: public_network
         type: cloudify.relationships.contained_in
@@ -295,14 +338,14 @@ node_templates:
     properties:
       openstack_config: *openstack_config
       use_external_resource: true
-      resource_id: { get_secret: public_network_name }
+      resource_id: { get_input: public_network_name }
 
   router:
     type: cloudify.openstack.nodes.Router
     properties:
       openstack_config: *openstack_config
       use_external_resource: true
-      resource_id: { get_secret: router_name }
+      resource_id: { get_input: router_name }
     relationships:
       - target: external_network
         type: cloudify.relationships.connected_to
@@ -312,7 +355,7 @@ node_templates:
     properties:
       openstack_config: *openstack_config
       use_external_resource: true
-      resource_id: { get_secret: external_network_name }
+      resource_id: { get_input: external_network_name }
     relationships:
       - type: cloudify.relationships.depends_on
         target: cloudify_host_cloud_config
@@ -326,7 +369,7 @@ node_templates:
             shell: /bin/bash
             sudo: ['ALL=(ALL) NOPASSWD:ALL']
             ssh-authorized-keys:
-              - { get_secret: agent_key_public }
+              - { get_input: agent_key_public }
 
   rabbitmq_floatingip:
     type: cloudify.openstack.nodes.FloatingIP
